@@ -26,6 +26,9 @@
  * Created by Jan Procházka (https://github.com/P-R-O-C-H-Y/)
  */
 
+//  This sketch uses the OneWireNg library by Piotr Stolarz and the DallasTemperature library by Miles Burton
+//  The OneWireNg library is the only onewire library that is compatible with esp 3.x
+
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
