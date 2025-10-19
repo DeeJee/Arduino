@@ -6,7 +6,7 @@ Average consumption during deep sleep is 14uA @ 4.2V.
 Code execution takes around 2.6s and consumes on average around 60mA @ 4.2V.
 */
 
-
+#define DEBUG_TRACE
 
 #ifndef ZIGBEE_MODE_ED
 #error "Zigbee end device mode is not selected in Tools->Zigbee mode"
@@ -23,7 +23,8 @@ BH1750 lightMeter;
 #define uS_TO_S_FACTOR 1000000ULL /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP 55          /* Sleep for 55s will + 5s delay for establishing connection => data reported every 1 minute */
 #define DELAY 100
-
+#define ENABLEVOLTAGEDIVIDER D10
+#define VOLTAGEPIN A1
 uint8_t button = BOOT_PIN;
 uint8_t sensePower = D3;
 
@@ -31,17 +32,17 @@ uint8_t sensePower = D3;
 ZigbeeIlluminanceSensor zbIlluminanceSensor = ZigbeeIlluminanceSensor(ZIGBEE_ILLUMINANCE_SENSOR_ENDPOINT);
 
 float getBatteryVoltage() {
+
   // Optional: configure analog input
   analogSetAttenuation(ADC_11db);  // set analog to digital converter (ADC) attenuation to 11 dB (up to ~3.3V input)
   analogReadResolution(12);        // set analog read resolution to 12 bits (value range from 0 to 4095), 12 is default
   uint32_t Vbatt = 0;
   for (int i = 0; i < 16; i++) {
-    Vbatt = Vbatt + analogReadMilliVolts(A0);  // ADC with correction
+    Vbatt = Vbatt + analogReadMilliVolts(VOLTAGEPIN);  // ADC with correction
   }
+
   return 2 * Vbatt / 16 / 1000.0;  // attenuation ratio 1/2, mV --> V
 }
-
-
 
 static uint16_t temp_sensor_value_update(void) {
   float voltage = getBatteryVoltage();
@@ -63,19 +64,18 @@ static uint16_t temp_sensor_value_update(void) {
   uint16_t lux = lightMeter.readLightLevel();
 
   // read the raw analog value from the sensor
-  Serial.printf("[Illuminance Sensor] raw analog value: %d\r\n", lux);
+  Serial.printf("[Illuminance Sensor] raw value: %d\r\n", lux);
 
   // Update illuminance in illuminance sensor EP
-  uint16_t encodedVaule = 10000 * log10(lux + 1);
-  Serial.printf("[Illuminance Sensor] encoded value: %d\r\n", encodedVaule);
-  if (!zbIlluminanceSensor.setIlluminance(encodedVaule)) {
+  uint16_t encodedValue = 10000 * log10(lux + 1);
+  Serial.printf("[Illuminance Sensor] encoded value: %d\r\n", encodedValue);
+  if (!zbIlluminanceSensor.setIlluminance(encodedValue)) {
     Serial.println("Updating illuminance failed!");
   }
 
   zbIlluminanceSensor.report();
   zbIlluminanceSensor.reportBatteryPercentage();
-  Serial.flush();
-  delay(100);
+
   return lux;
 }
 
@@ -86,7 +86,10 @@ void setup() {
 
   // Init button switch
   pinMode(button, INPUT_PULLUP);
-  pinMode(A0, INPUT);  // ADC
+  pinMode(VOLTAGEPIN, INPUT);  // ADC
+
+  pinMode(ENABLEVOLTAGEDIVIDER, OUTPUT);  // voltage divider
+  digitalWrite(ENABLEVOLTAGEDIVIDER, HIGH);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
@@ -134,42 +137,44 @@ void setup() {
     delay(DELAY);
   }
 
-  Serial.println();
+  if (Zigbee.connected()) {
+    Serial.printf("Connected to zigbee in %d seconds", zigbeeConnectTime / 1000);
+    Serial.println();
+  } else {
+    Serial.println("Timeout connecting to zigbee!!");
+  }
+
   // Wait 20s if boot reason is not wake from sleep. This is required for proper pairing with Zigbee2MQTT
   if ((int)esp_rom_get_reset_reason(0) != 5) {  //  SW_CPU_RESET=12 ,  POWERON_RESET=1 , DEEPSLEEP_RESET=5
-    Serial.print("Pairing");
+    Serial.print("Waiting 10sec for pairing");
     int pairingTime = 0;
-    while (pairingTime < 20000) {
+
+    while (pairingTime < 10000) {
       Serial.print(".");
       pairingTime += DELAY;
       delay(DELAY);
     }
+    
     Serial.println();
   }
 }
 
-void loop() {
-  // Checking button for factory reset
-  if (digitalRead(button) == LOW) {
-    delay(DELAY);
-    int startTime = millis();
-    while (digitalRead(button) == LOW) {
-      delay(50);
-      if ((millis() - startTime) > 3000) {
-        // If key pressed for more than 3secs, factory reset Zigbee and reboot
-        Serial.println("Resetting Zigbee to factory and rebooting in 1s.");
-        delay(1000);
-        Zigbee.factoryReset();
-      }
-    }
-  }
-  uint16_t lux = temp_sensor_value_update();
-  Serial.println("Going to sleep now");
 
+void   hybernate(uint16_t lux) {
   // Put ESP to sleep
   int timeToSleep = lux > 10 ? 55 : 3600;
   Serial.printf("Going to sleep for %d seconds", timeToSleep);
-  //esp_sleep_enable_timer_wakeup(timeToSleep * uS_TO_S_FACTOR);
-  //esp_deep_sleep_start();
-  sleep(10000);
+
+  digitalWrite(ENABLEVOLTAGEDIVIDER, LOW);
+
+  Serial.flush();
+  delay(100);
+
+  esp_sleep_enable_timer_wakeup(timeToSleep * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();
+}
+
+void loop() {
+  uint16_t lux = temp_sensor_value_update();
+  hybernate(lux);
 }
